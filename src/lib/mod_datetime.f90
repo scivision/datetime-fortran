@@ -8,7 +8,7 @@ module mod_datetime
 !
 !=======================================================================
 
-use,intrinsic :: iso_fortran_env,only:real32,real64
+use,intrinsic :: iso_fortran_env,only: real64, int64
 use,intrinsic :: iso_c_binding,only:c_char,c_int,c_null_char
 use :: mod_timedelta,only:timedelta
 use :: mod_strftime, only:tm_struct,c_strftime,c_strptime
@@ -40,7 +40,7 @@ type :: datetime
   integer :: hour        = 0 !! hour in day [0-23]
   integer :: minute      = 0 !! minute in hour [0-59]
   integer :: second      = 0 !! second in minute [0-59]
-  integer :: millisecond = 0 !! milliseconds in second [0-999]
+  integer :: microsecond = 0 !! microseconds in second [0-999999]
 
   real(kind=real64) :: tz = 0 !! timezone offset from UTC [hours]
 
@@ -54,6 +54,7 @@ type :: datetime
   procedure,pass(self),public :: getMinute
   procedure,pass(self),public :: getSecond
   procedure,pass(self),public :: getMillisecond
+  procedure,pass(self),public :: getMicrosecond
   procedure,pass(self),public :: getTz
 
   ! public methods
@@ -75,6 +76,7 @@ type :: datetime
   procedure,pass(self),public :: yearday
 
   ! private methods
+  procedure,pass(self),private :: addMicroseconds
   procedure,pass(self),private :: addMilliseconds
   procedure,pass(self),private :: addSeconds
   procedure,pass(self),private :: addMinutes
@@ -85,7 +87,7 @@ type :: datetime
   procedure,pass(d0),private :: datetime_plus_timedelta
   procedure,pass(d0),private :: timedelta_plus_datetime
   procedure,pass(d0),private :: datetime_minus_datetime
-  procedure,pass(d0),private :: datetime_minus_timedelta 
+  procedure,pass(d0),private :: datetime_minus_timedelta
   procedure,pass(d0),private :: eq
   procedure,pass(d0),private :: neq
   procedure,pass(d0),private :: gt
@@ -116,21 +118,22 @@ contains
 
 
 pure elemental type(datetime) function datetime_constructor(year,month,&
-  day,hour,minute,second,millisecond,tz)
+  day,hour,minute,second,millisecond,microsecond,tz)
 
   !! Constructor function for the `datetime` class.
 
   integer,          intent(in),optional :: year        !! year
   integer,          intent(in),optional :: month       !! month
   integer,          intent(in),optional :: day         !! day
-  integer,          intent(in),optional :: hour        !! hour 
+  integer,          intent(in),optional :: hour        !! hour
   integer,          intent(in),optional :: minute      !! minute
   integer,          intent(in),optional :: second      !! second
   integer,          intent(in),optional :: millisecond !! millisecond
+  integer,          intent(in),optional :: microsecond !! microsecond
   real(kind=real64),intent(in),optional :: tz          !! timezone offset in hours
 
   if(present(year))then
-    datetime_constructor % year = year    
+    datetime_constructor % year = year
   else
     datetime_constructor % year = 1
   endif
@@ -165,10 +168,10 @@ pure elemental type(datetime) function datetime_constructor(year,month,&
     datetime_constructor % second = 0
   endif
 
-  if(present(millisecond))then
-    datetime_constructor % millisecond = millisecond
-  else
-    datetime_constructor % millisecond = 0
+  datetime_constructor % microsecond = 0
+  if(present(millisecond)) datetime_constructor % microsecond = millisecond*1000
+  if(present(microsecond))then
+    datetime_constructor % microsecond = datetime_constructor % microsecond + microsecond
   endif
 
   if(present(tz))then
@@ -181,7 +184,7 @@ endfunction datetime_constructor
 
 
 
-! datetime getters  
+! datetime getters
 !=======================================================================
 
 pure elemental integer function getYear(self)
@@ -235,9 +238,15 @@ endfunction getSecond
 pure elemental integer function getMillisecond(self)
   !! Returns the year component
   class(datetime),intent(in) :: self !! `datetime` instance
-  getMillisecond = self % millisecond
+  getMillisecond = self % microsecond * 1e-3_real64
 endfunction getMillisecond
 
+
+pure elemental integer function getMicrosecond(self)
+  !! Returns the year component
+  class(datetime),intent(in) :: self !! `datetime` instance
+  getMicrosecond = self % microsecond
+endfunction getMicrosecond
 
 
 pure elemental real(kind=real64) function getTz(self)
@@ -256,29 +265,42 @@ pure elemental subroutine addMilliseconds(self,ms)
   class(datetime),intent(inout) :: self !! `datetime` instance
   integer,        intent(in)    :: ms   !! number of milliseconds to add
 
-  self % millisecond = self % millisecond+ms
+  call self % addMicroseconds(1000*ms)
+
+endsubroutine addMilliseconds
+
+
+pure elemental subroutine addMicroseconds(self,us)
+
+  !! Adds an integer number of Microseconds to self. Called by `datetime`
+  !! addition (`+`) and subtraction (`-`) operators.
+
+  class(datetime),intent(inout) :: self !! `datetime` instance
+  integer,        intent(in)    :: us   !! number of Microseconds to add
+
+  self % microsecond = self % microsecond + us
 
   do
-    if(self % millisecond >= 1000)then
-      call self % addSeconds(self % millisecond/1000)
-      self % millisecond = mod(self % millisecond,1000)
-    elseif(self % millisecond < 0)then
-      call self % addSeconds(self % millisecond/1000-1)
-      self % millisecond = mod(self % millisecond,1000)+1000
+    if(self % microsecond >= 1000000)then
+      call self % addSeconds(int(self % microsecond * 1e-6_real64))
+      self % microsecond = mod(self % microsecond,1000000)
+    elseif(self % microsecond < 0)then
+      call self % addSeconds(int(self % microsecond* 1e-6_real64)-1)
+      self % microsecond = mod(self % microsecond,1000000)+1000000
     else
       exit
     endif
   enddo
 
-endsubroutine addMilliseconds
+endsubroutine addMicroseconds
 
 
-! datetime-bound methods 
+! datetime-bound methods
 !=======================================================================
 
 pure elemental subroutine addSeconds(self,s)
 
-  !! Adds an integer number of seconds to self. Called by `datetime` 
+  !! Adds an integer number of seconds to self. Called by `datetime`
   !! addition (`+`) and subtraction (`-`) operators.
 
   class(datetime),intent(inout) :: self !! `datetime` instance
@@ -304,7 +326,7 @@ endsubroutine addSeconds
 
 pure elemental subroutine addMinutes(self,m)
 
-  !! Adds an integer number of minutes to self. Called by `datetime` 
+  !! Adds an integer number of minutes to self. Called by `datetime`
   !! addition (`+`) and subtraction (`-`) operators.
 
   class(datetime),intent(inout) :: self !! `datetime` instance
@@ -330,7 +352,7 @@ endsubroutine addMinutes
 
 pure elemental subroutine addHours(self,h)
 
-  !! Adds an integer number of hours to self. Called by `datetime` 
+  !! Adds an integer number of hours to self. Called by `datetime`
   !! addition (`+`) and subtraction (`-`) operators.
 
   class(datetime),intent(inout) :: self !! `datetime` instance
@@ -356,7 +378,7 @@ endsubroutine addHours
 
 pure elemental subroutine addDays(self,d)
 
-  !! Adds an integer number of dayss to self. Called by `datetime` 
+  !! Adds an integer number of dayss to self. Called by `datetime`
   !! addition (`+`) and subtraction (`-`) operators.
 
   class(datetime),intent(inout) :: self !! `datetime` instance
@@ -383,7 +405,7 @@ pure elemental subroutine addDays(self,d)
       self % day = self % day+daysInMonth(self % month,self % year)
     else
       exit
-    endif 
+    endif
   enddo
 
 endsubroutine addDays
@@ -395,7 +417,7 @@ pure elemental character(len=23) function isoformat(self,sep)
   !! Returns character string with time in ISO 8601 format.
 
   class(datetime), intent(in)          :: self !! `datetime instance`
-  character(len=1),intent(in),optional :: sep  
+  character(len=1),intent(in),optional :: sep
     !! separator character, 'T' is default
 
   character(len=1) :: separator
@@ -406,8 +428,8 @@ pure elemental character(len=23) function isoformat(self,sep)
     separator = 'T'
   endif
 
-  ! TODO below is a bit cumbersome and was implemented 
-  ! at a time before the interface to strftime. Now we 
+  ! TODO below is a bit cumbersome and was implemented
+  ! at a time before the interface to strftime. Now we
   ! could do something like:
   !
   ! isoformat = self % strftime('%Y-%m-%d'//separator//'%H:%M:%S')
@@ -418,7 +440,7 @@ pure elemental character(len=23) function isoformat(self,sep)
               int2str(self % hour,       2)//':'//      &
               int2str(self % minute,     2)//':'//      &
               int2str(self % second,     2)//'.'//      &
-              int2str(self % millisecond,3)
+              int2str(int(self % microsecond * 1e-3_real64),3)
 
 endfunction isoformat
 
@@ -426,8 +448,8 @@ endfunction isoformat
 
 pure elemental logical function isValid(self)
 
-  !! Checks whether the `datetime` instance has valid component values. 
-  !! Returns `.true.` if the `datetime` instance is valid, and `.false.` 
+  !! Checks whether the `datetime` instance has valid component values.
+  !! Returns `.true.` if the `datetime` instance is valid, and `.false.`
   !! otherwise.
 
   class(datetime),intent(in) :: self !! `datetime` instance
@@ -450,23 +472,23 @@ pure elemental logical function isValid(self)
     isValid = .false.
     return
   endif
- 
-  if(self % hour < 0 .or. self % hour > 23)then    
+
+  if(self % hour < 0 .or. self % hour > 23)then
     isValid = .false.
     return
   endif
 
-  if(self % minute < 0 .or. self % minute > 59)then    
+  if(self % minute < 0 .or. self % minute > 59)then
     isValid = .false.
     return
   endif
 
-  if(self % second < 0 .or. self % second > 59)then    
+  if(self % second < 0 .or. self % second > 59)then
     isValid = .false.
     return
   endif
 
-  if(self % millisecond < 0 .or. self % millisecond > 999)then    
+  if(self % microsecond < 0 .or. self % microsecond > 999999)then
     isValid = .false.
     return
   endif
@@ -477,7 +499,7 @@ endfunction isValid
 
 type(datetime) function now()
 
-  !! Returns a `datetime` instance with current time. 
+  !! Returns a `datetime` instance with current time.
   !! No input arguments.
 
   character(len=5)     :: zone
@@ -507,7 +529,7 @@ endfunction now
 
 pure elemental integer function weekday(self)
 
-  !! Returns the day of the week calculated using Zeller's congruence. 
+  !! Returns the day of the week calculated using Zeller's congruence.
   !! Returned value is an integer scalar in the range [0-6], such that:
   !!
   !! 0: Sunday
@@ -558,7 +580,7 @@ pure elemental integer function isoweekday(self)
   class(datetime),intent(in) :: self !! `datetime` instance
 
   isoweekday = self % weekday()
-  
+
   if (isoweekday == 0) then
     isoweekday = 7
   end if
@@ -632,8 +654,8 @@ endfunction isoweekdayShort
 
 function isocalendar(self)
 
-  !! Returns an array of 3 integers, year, week number, and week day, 
-  !! as defined by ISO 8601 week date. Essentially a wrapper around C 
+  !! Returns an array of 3 integers, year, week number, and week day,
+  !! as defined by ISO 8601 week date. Essentially a wrapper around C
   !! `strftime` function.
 
   class(datetime),intent(in) :: self !! `datetime` instance
@@ -644,7 +666,7 @@ function isocalendar(self)
   character(len=20)    :: string
 
   rc = c_strftime(string,len(string),'%G %V %u'//c_null_char,&
-                  self % tm())  
+                  self % tm())
 
   read(unit=string(1:4),fmt='(I4)')year
   read(unit=string(6:7),fmt='(I2)')week
@@ -658,10 +680,10 @@ endfunction isocalendar
 
 integer function secondsSinceEpoch(self)
 
-  !! Returns an integer number of seconds since the UNIX Epoch, 
-  !! `1970-01-01 00:00:00`. Note that this is a wrapper around C's 
-  !! `strftime('%s')`, so the number of seconds will reflect the time 
-  !! zone of the local machine on which the function is being called. 
+  !! Returns an integer number of seconds since the UNIX Epoch,
+  !! `1970-01-01 00:00:00`. Note that this is a wrapper around C's
+  !! `strftime('%s')`, so the number of seconds will reflect the time
+  !! zone of the local machine on which the function is being called.
 
   class(datetime),intent(in) :: self !! `datetime` instance
 
@@ -748,7 +770,7 @@ endfunction tzOffset
 
 pure elemental type(datetime) function utc(self)
 
-  !! Returns the `datetime` instance at Coordinated Universal Time (UTC). 
+  !! Returns the `datetime` instance at Coordinated Universal Time (UTC).
 
   class(datetime),intent(in) :: self !! `datetime` instance
 
@@ -795,7 +817,7 @@ pure elemental function datetime_plus_timedelta(d0,t) result(d)
   class(timedelta),intent(in) :: t  !! `timedelta` instance
   type(datetime)              :: d
 
-  integer :: milliseconds,seconds,minutes,hours,days
+  integer :: microseconds,seconds,minutes,hours,days
 
   d = datetime(year        = d0 % getYear(),       &
                month       = d0 % getMonth(),      &
@@ -803,20 +825,21 @@ pure elemental function datetime_plus_timedelta(d0,t) result(d)
                hour        = d0 % getHour(),       &
                minute      = d0 % getMinute(),     &
                second      = d0 % getSecond(),     &
-               millisecond = d0 % getMillisecond(),&
+               microsecond = d0 % getMicrosecond(),&
                tz          = d0 % getTz())
 
-  milliseconds = t % getMilliseconds()
+  microseconds = t % getMicroseconds()
   seconds      = t % getSeconds()
   minutes      = t % getMinutes()
   hours        = t % getHours()
   days         = t % getDays()
 
-  if(milliseconds /= 0)call d % addMilliseconds(milliseconds)
+  if(microseconds /= 0)call d % addMicroseconds(microseconds)
   if(seconds      /= 0)call d % addSeconds(seconds)
   if(minutes      /= 0)call d % addMinutes(minutes)
   if(hours        /= 0)call d % addHours(hours)
   if(days         /= 0)call d % addDays(days)
+
 
 endfunction datetime_plus_timedelta
 
@@ -862,27 +885,32 @@ pure elemental function datetime_minus_datetime(d0,d1) result(t)
   type(timedelta)            :: t
 
   real(kind=real64) :: daysDiff
-  integer :: days,hours,minutes,seconds,milliseconds
+  integer :: days,hours,minutes,seconds,microseconds
+  integer(int64) :: u0, u1, du
+  integer(int64), parameter :: mill=1000000_int64, d2s=86400_int64, h2s=3600_int64, m2s=60_int64
   integer :: sign_
 
-  daysDiff = date2num(d0)-date2num(d1)
+  u0 = mill * (d0%day*d2s + d0%hour*h2s + d0%minute*m2s + d0%second) + d0%microsecond
+  u1 = mill * (d1%day*d2s + d1%hour*h2s + d1%minute*m2s + d1%second) + d1%microsecond
+  du = u0 - u1
 
-  if(daysDiff < 0)then
+  if(d1 > d0)then
     sign_ = -1
-    daysDiff = ABS(daysDiff)
   else
     sign_ = 1
   endif
 
-  days         = int(daysDiff)
-  hours        = int((daysDiff-days)*d2h)
-  minutes      = int((daysDiff-days-hours*h2d)*d2m)
-  seconds      = int((daysDiff-days-hours*h2d-minutes*m2d)*d2s)
-  milliseconds = nint((daysDiff-days-hours*h2d-minutes*m2d&
-                               -seconds*s2d)*d2s*1e3_real64)
+  days         = du / mill / d2s
+  du = du - days * mill * d2s
+  hours        = du / mill / h2s
+  du = du - hours * mill * h2s
+  minutes      = du / mill / m2s
+  du = du - minutes * mill * m2s
+  seconds      = du / mill
+  microseconds = du - seconds * mill
 
   t = timedelta(sign_*days,sign_*hours,sign_*minutes,sign_*seconds,&
-                sign_*milliseconds)
+                microseconds=sign_*microseconds)
 
 endfunction datetime_minus_datetime
 
@@ -890,8 +918,8 @@ endfunction datetime_minus_datetime
 
 pure elemental logical function gt(d0,d1)
 
-  !! `datetime` comparison operator that eturns `.true.` if `d0` is 
-  !! greater than `d1` and `.false.` otherwise. Overloads the 
+  !! `datetime` comparison operator that eturns `.true.` if `d0` is
+  !! greater than `d1` and `.false.` otherwise. Overloads the
   !! operator `>`.
 
   class(datetime),intent(in) :: d0 !! lhs `datetime` instance
@@ -945,8 +973,8 @@ pure elemental logical function gt(d0,d1)
               gt = .false.
             else
 
-              ! Millisecond comparison block
-              if(d0_utc % millisecond > d1_utc % millisecond)then
+              ! Microsecond comparison block
+              if(d0_utc % microsecond > d1_utc % microsecond)then
                 gt = .true.
               else
                 gt = .false.
@@ -965,7 +993,7 @@ endfunction gt
 
 pure elemental logical function lt(d0,d1)
 
-  !! `datetime` comparison operator that returns `.true.` if `d0` is 
+  !! `datetime` comparison operator that returns `.true.` if `d0` is
   !! less than `d1` and `.false.` otherwise. Overloads the operator `<`.
 
   class(datetime),intent(in) :: d0 !! lhs `datetime` instance
@@ -979,7 +1007,7 @@ endfunction lt
 
 pure elemental logical function eq(d0,d1)
 
-  !! `datetime` comparison operator that returns `.true.` if `d0` is 
+  !! `datetime` comparison operator that returns `.true.` if `d0` is
   !! equal to `d1` and `.false.` otherwise. Overloads the operator `==`.
 
   class(datetime),intent(in) :: d0 !! lhs `datetime` instance
@@ -997,7 +1025,7 @@ pure elemental logical function eq(d0,d1)
        d0_utc % hour        == d1_utc % hour   .and. &
        d0_utc % minute      == d1_utc % minute .and. &
        d0_utc % second      == d1_utc % second .and. &
-       d0_utc % millisecond == d1_utc % millisecond
+       d0_utc % microsecond == d1_utc % microsecond
 
 endfunction eq
 
@@ -1005,7 +1033,7 @@ endfunction eq
 
 pure elemental logical function neq(d0,d1)
 
-  !! `datetime` comparison operator that eturns `.true.` if `d0` is 
+  !! `datetime` comparison operator that eturns `.true.` if `d0` is
   !! not equal to `d1` and `.false.` otherwise. Overloads the operator `/=`.
 
   class(datetime),intent(in) :: d0 !! lhs `datetime` instance
@@ -1019,8 +1047,8 @@ endfunction neq
 
 pure elemental logical function ge(d0,d1)
 
-  !! `datetime` comparison operator. Returns `.true.` if `d0` is greater 
-  !! than or equal to `d1` and `.false.` otherwise. Overloads the 
+  !! `datetime` comparison operator. Returns `.true.` if `d0` is greater
+  !! than or equal to `d1` and `.false.` otherwise. Overloads the
   !! operator `>=`.
 
   class(datetime),intent(in) :: d0 !! lhs `datetime` instance
@@ -1034,8 +1062,8 @@ endfunction ge
 
 pure elemental logical function le(d0,d1)
 
-  !! `datetime` comparison operator. Returns `.true.` if `d0` is less 
-  !! than or equal to `d1`, and `.false.` otherwise. Overloads the 
+  !! `datetime` comparison operator. Returns `.true.` if `d0` is less
+  !! than or equal to `d1`, and `.false.` otherwise. Overloads the
   !! operator `<=`.
 
   class(datetime),intent(in) :: d0 !! lhs `datetime` instance
@@ -1065,9 +1093,9 @@ endfunction isLeapYear
 
 pure function datetimeRange(d0,d1,t)
 
-  !! Given start and end `datetime` instances `d0` and `d1` and time 
-  !! increment as `timedelta` instance `t`, returns an array of 
-  !! `datetime` instances. The number of elements is the number of whole 
+  !! Given start and end `datetime` instances `d0` and `d1` and time
+  !! increment as `timedelta` instance `t`, returns an array of
+  !! `datetime` instances. The number of elements is the number of whole
   !! time increments contained between datetimes `d0` and `d1`.
 
   type(datetime), intent(in) :: d0 !! start time
@@ -1113,8 +1141,8 @@ pure elemental integer function daysInMonth(month,year)
 
   if(month < 1 .or. month > 12)then
     ! Should raise an error and abort here, however we want to keep
-    ! the pure and elemental attributes. Make sure this function is 
-    ! called with the month argument in range. 
+    ! the pure and elemental attributes. Make sure this function is
+    ! called with the month argument in range.
     daysInMonth = 0
     return
   endif
@@ -1147,7 +1175,7 @@ endfunction daysInYear
 
 pure elemental real(kind=real64) function date2num(d)
 
-  !! Given a datetime instance d, returns number of days since 
+  !! Given a datetime instance d, returns number of days since
   !! `0001-01-01 00:00:00`, taking into account the timezone offset.
 
   type(datetime),intent(in) :: d !! `datetime` instance
@@ -1173,21 +1201,21 @@ pure elemental real(kind=real64) function date2num(d)
            + d_utc % yearday() &
            + d_utc % hour*h2d  &
            + d_utc % minute*m2d&
-           + (d_utc % second+1e-3_real64*d_utc % millisecond)*s2d
- 
+           + (d_utc % second + d_utc % microsecond * 1e-6_real64)*s2d
+
 endfunction date2num
 
 
 
 pure elemental type(datetime) function num2date(num)
 
-  !! Given number of days since `0001-01-01 00:00:00`, returns a 
+  !! Given number of days since `0001-01-01 00:00:00`, returns a
   !! correspoding `datetime` instance.
 
-  real(kind=real64),intent(in) :: num 
+  real(kind=real64),intent(in) :: num
     !! number of days since `0001-01-01 00:00:00`
 
-  integer :: year,month,day,hour,minute,second,millisecond
+  integer :: year,month,day,hour,minute,second,microsecond
   real(kind=real64) :: days,totseconds
 
   ! num must be positive:
@@ -1207,7 +1235,7 @@ pure elemental type(datetime) function num2date(num)
 
   month = 1
   do
-    if(inT(days) <= daysInMonth(month,year))exit
+    if(int(days) <= daysInMonth(month,year))exit
     days = days-daysInMonth(month,year)
     month = month+1
   enddo
@@ -1217,13 +1245,13 @@ pure elemental type(datetime) function num2date(num)
   hour        = int(totseconds*s2h)
   minute      = int((totseconds-hour*h2s)*s2m)
   second      = int(totseconds-hour*h2s-minute*m2s)
-  millisecond = nint((totseconds-int(totseconds))*1e3_real64)
+  microsecond = nint((totseconds-int(totseconds))*1000000)
 
-  num2date = datetime(year,month,day,hour,minute,second,millisecond,tz=zero)
+  num2date = datetime(year,month,day,hour,minute,second, microsecond=microsecond,tz=zero)
 
   ! Handle a special case caused by floating-point arithmethic:
-  if(num2date % millisecond == 1000)then
-    num2date % millisecond = 0
+  if(num2date % microsecond == 1000000)then
+    num2date % microsecond = 0
     call num2date % addSeconds(1)
   endif
 
@@ -1247,7 +1275,7 @@ endfunction num2date
 type(datetime) function strptime(str,format)
 
   !! A wrapper function around C/C++ strptime function.
-  !! Returns a `datetime` instance. 
+  !! Returns a `datetime` instance.
 
   character(len=*),intent(in) :: str    !! time string
   character(len=*),intent(in) :: format !! time format
@@ -1264,12 +1292,12 @@ endfunction strptime
 
 pure elemental type(datetime) function tm2date(ctime)
 
-  !! Given a `tm_struct` instance, returns a corresponding `datetime` 
+  !! Given a `tm_struct` instance, returns a corresponding `datetime`
   !! instance.
 
   type(tm_struct),intent(in) :: ctime !! C-style time struct
 
-  tm2date % millisecond = 0
+  tm2date % microsecond = 0
   tm2date % second      = ctime % tm_sec
   tm2date % minute      = ctime % tm_min
   tm2date % hour        = ctime % tm_hour
